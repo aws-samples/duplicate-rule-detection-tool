@@ -14,7 +14,7 @@ In order to solve this problem, we have built a solution to assess the current a
 
 The diagram below illustrates the solution we have created. It begins with an [Amazon EventBridge](https://aws.amazon.com/pm/eventbridge/) event triggered on the basis of a cron expression that is configurable based on the customer’s preferred schedule. This event then triggers an [AWS Lambda](https://aws.amazon.com/lambda/) function, which makes the describe-config-rules API call to AWS Config API. The Lambda function aggregates all of the config rules deployed in the account within the same region, from Security Hub Standards, Config Conformance Packs, standalone Config Rules, and Control Tower Library. Then, the Lambda function iterates through all of the deployed Config rules to determine whether there are any duplicate rules. In order to be considered duplicates, Config rules need to have identical sources, scopes, input parameters and states. If any duplicates are found, they are grouped together in JSON format. The Lambda function takes the JSON of the duplicate rules, timestamps it, and saves it to an Amazon S3 bucket for further analysis. With this solution, customers have a quick way to identify any duplicate rules within their environment and take action accordingly.
 
-![Figure 1. Architectural diagram of the Duplicate Rule Detection Tool.](/Rule-Dup-Architecture.png)
+![Figure 1. Architectural diagram of the Duplicate Rule Detection Tool.](/images/Rule-Dup-Architecture.png)
 
 ## Walkthrough
 
@@ -70,7 +70,7 @@ An AWS account with detective controls enabled, which may include AWS Config con
 ### Testing/Validation
 
 The output of the Lambda function is a JSON file written to an S3 bucket. Each duplicate rule is presented as an object and are grouped together in an array.
-![Figure 2. Screen shot of solution output.](/Rule-Dup-Output.png)
+![Figure 2. Screen shot of solution output.](/images/Rule-Dup-Output.png)
 
 From the output, we can see that in this account we have three instances of the same Config managed rule:
 
@@ -80,10 +80,10 @@ From the output, we can see that in this account we have three instances of the 
 Each rule has the same InputParameters, which is a qualifier for how we are defining a duplicate rule. There could be a use case that a customer may have a need to deploy multiple variations of the same rule with distinct input parameters.
 
 Now that the duplicate rules have been identified, further investigation may be required to identify the specific conformance pack and Security Hub standards that the rule is included in.
-![Figure 3. Screen shot of AWS Config conformance pack dashboard.](/Conf-Pack.png)
+![Figure 3. Screen shot of AWS Config conformance pack dashboard.](/images/Conf-Pack.png)
 
 Each output object contains a ConfigRuleName key value pair that includes the prefixes and suffixes that may be applied to uniquely identify each rule and that ties back to the specific conformance pack. From the Config Conformance Pack dashboard, you can search rules by name to map to the corresponding conformance pack.
-![Figure 4. Screen shot of AWS Security Hub dashboard.](/Sec-Hub.png)
+![Figure 4. Screen shot of AWS Security Hub dashboard.](/images/Sec-Hub.png)
 
 For Security Hub security standards dashboard, you can search for the specific control and identify the corresponding config rule.
 
