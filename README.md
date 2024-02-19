@@ -107,7 +107,7 @@ For customers in regulated industries, it’s critical to understand the complia
 
 ## Additional Resources/Call to Action
 
-This sample code is not intended to be used in your production accounts without testing, securing, and optimizing the content based on your specific quality control practices and standards. Deploying this sample code may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage.
+**This sample code is not intended to be used in your production accounts without testing, securing, and optimizing the content based on your specific quality control practices and standards. Deploying this sample code may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage.**
 
 Once the assessment is complete and duplicate rules are identified, further investigation can be completed to identify the sources of the deployed Config rules. If the AWS account being evaluated is part of an AWS Organizations, then dependencies may exist.
 
