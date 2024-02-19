@@ -107,6 +107,8 @@ For customers in regulated industries, it’s critical to understand the complia
 
 ## Additional Resources/Call to Action
 
+This sample code is not intended to be used in your production accounts without testing, securing, and optimizing the content based on your specific quality control practices and standards. Deploying this sample code may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage.
+
 Once the assessment is complete and duplicate rules are identified, further investigation can be completed to identify the sources of the deployed Config rules. If the AWS account being evaluated is part of an AWS Organizations, then dependencies may exist.
 
 Rules deployed via Conformance Packs will include a suffix to the displayed Config rule name that includes “conformance-pack-” followed by a string of alpha-numeric characters, which logically represents a specific Conformance Pack.
@@ -135,7 +137,6 @@ CloudFormation resource reference - https://docs.aws.amazon.com/AWSCloudFormatio
 Amazon S3 applies server-side encryption with Amazon S3 managed keys (SSE-S3), by default, as the base level of encryption for every bucket in Amazon S3. Other encryption options are also available and should be implemented, including specifying server-side encryption with AWS KMS-managed keys (SSE-KMS)
 S3 User Guide - https://docs.aws.amazon.com/AmazonS3/latest/userguide/serv-side-encryption.html
 CloudFormation resource reference - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-s3-bucket-bucketencryption.html
-
 
 ## Security
 
