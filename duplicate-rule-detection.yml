@@ -2,54 +2,8 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: This template creates resources
 # Sample code, software libraries, command line tools, proofs of concept, templates, or other related technology are provided as AWS Content or Third-Party Content under the AWS Customer Agreement, or the relevant written agreement between you and AWS (whichever applies). You should not use this AWS Content or Third-Party Content in your production accounts, or on production or other critical data. You are responsible for testing, securing, and optimizing the AWS Content or Third-Party Content, such as sample code, as appropriate for production grade use based on your specific quality control practices and standards. Deploying AWS Content or Third-Party Content may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage. Refer to associated README for additional guidance and considerations.
 
-Metadata:
-  "AWS::CloudFormation::Designer":
-    7eef4ce0-0c76-479b-9991-d421d0f52e0f:
-      size:
-        width: 60
-        height: 60
-      position:
-        x: 330
-        "y": 220
-      z: 0
-      embeds: []
-    4a4bbb7c-58e6-470a-9e44-fcebb558f85b:
-      size:
-        width: 60
-        height: 60
-      position:
-        x: 490
-        "y": 220
-      z: 0
-      embeds: []
-    6e112ca0-f4bc-477f-9712-f3291b78065d:
-      size:
-        width: 60
-        height: 60
-      position:
-        x: 710
-        "y": 70
-      z: 0
-      embeds: []
-    18dc8c84-2444-4208-a708-9d4ac0232ef2:
-      size:
-        width: 60
-        height: 60
-      position:
-        x: 490
-        "y": 50
-      z: 0
-      embeds: []
-    8f622487-faba-40fd-9341-b1d0340dd86a:
-      size:
-        width: 60
-        height: 60
-      position:
-        x: 130
-        "y": 80
-      z: 0
-      embeds: []
 Resources:
+  # Define the Lambda function that detects duplicate AWS Config rules
   DuplicateRuleDetectionLambda:
     Type: "AWS::Lambda::Function"
     Properties:
@@ -60,112 +14,91 @@ Resources:
           import boto3
           from datetime import datetime
           import os
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          configClient = boto3.client('config')
+          s3Client = boto3.client('s3')
 
           def lambda_handler(event, context):
+              all_config_rules = get_all_config_rules()
+              repeated_rules = find_equivalent_active_rules(all_config_rules)
+              upload_to_s3(repeated_rules)
+              return {'statusCode': 200, 'body': repeated_rules}
 
-              allConfigRules = []
-
-              configclient = boto3.client('config')
-              response = configclient.describe_config_rules()
-
-              allConfigRules = allConfigRules + response["ConfigRules"]
-
-              if (response.get("NextToken")):
-                  nextTokenValue = response["NextToken"]
-                  while nextTokenValue:
-                      response = configclient.describe_config_rules(
-                          NextToken=nextTokenValue
-                      )
-
-                      allConfigRules = allConfigRules + response["ConfigRules"]
-
-                      if response.get("NextToken"):            
-                          nextTokenValue=response["NextToken"]
-                      else:
-                          nextTokenValue=False
-
-              checkedConfigRules = {}
-              equivelentRules = {}
-
-              for index, configRule in enumerate(allConfigRules):
-                  if not checkedConfigRules.get(allConfigRules[index]["ConfigRuleArn"]):
-                      if allConfigRules[index]["ConfigRuleState"] == "ACTIVE":
-                          checkedConfigRules[allConfigRules[index]["ConfigRuleArn"]] = True
-                          equivelentRules[allConfigRules[index]["ConfigRuleArn"]] = [allConfigRules[index]]
-                          for comparedIndex, comparedConfigRule in enumerate(allConfigRules):
-                              if not checkedConfigRules.get(allConfigRules[comparedIndex]["ConfigRuleArn"]):
-                                  if allConfigRules[index]["Source"] == allConfigRules[comparedIndex]["Source"]:
-                                      if compareScope(allConfigRules[index], allConfigRules[comparedIndex]):
-                                          if allConfigRules[index].get("InputParameters") and allConfigRules[comparedIndex].get("InputParameters"):
-                                              if allConfigRules[index]["InputParameters"] == allConfigRules[comparedIndex]["InputParameters"]:
-                                                  if allConfigRules[comparedIndex]["ConfigRuleState"] == "ACTIVE":
-                                                      checkedConfigRules[allConfigRules[comparedIndex]["ConfigRuleArn"]] = True
-                                                      equivelentRules[allConfigRules[index]["ConfigRuleArn"]].append(allConfigRules[comparedIndex])
-                                          elif not allConfigRules[index].get("InputParameters") and not allConfigRules[comparedIndex].get("InputParameters"):
-                                              if allConfigRules[comparedIndex]["ConfigRuleState"] == "ACTIVE":
-                                                  checkedConfigRules[allConfigRules[comparedIndex]["ConfigRuleArn"]] = True
-                                                  equivelentRules[allConfigRules[index]["ConfigRuleArn"]].append(allConfigRules[comparedIndex])
-
-
-              repeatedRulesObject = {}
-
-              for key in equivelentRules:
-                  if len(equivelentRules[key]) > 1:
-                      repeatedRulesObject[key] = equivelentRules[key]
-
-              now = datetime.now()
-              dt_string = now.strftime("Date-%d-%m-%Y Time-%H-%M-%S.json")
-
-              duplicatedRulesArray = list(repeatedRulesObject.values())
-
-              filePath = "/tmp/" + dt_string
-
-              with open(filePath, "x") as write_file:
-                  json.dump(duplicatedRulesArray, write_file)
-
-              s3client = boto3.client('s3')
-
-              s3client.upload_file(filePath, os.environ.get('S3BucketName'), dt_string)
-
-
-              os.remove('/tmp/' + dt_string)
-
-              print(len(duplicatedRulesArray))
-
-              return {
-                  'statusCode': 200,
-                  'body': duplicatedRulesArray
-              }
-
-          def compareScope(obj1, obj2):
-              if not obj1.get("Scope") and not obj2.get("Scope"):
-                  return True
-              elif obj1.get("Scope") and not obj2.get("Scope"):
-                  if len(obj1["Scope"]["ComplianceResourceTypes"]) == 0:
-                      return True
+          def get_all_config_rules():
+              all_config_rules = []
+              next_token = None
+              while True:
+                  if next_token:
+                      response = configClient.describe_config_rules(NextToken=next_token)
                   else:
-                      return False
-              elif not obj1.get("Scope") and obj2.get("Scope"):
-                  if len(obj2["Scope"]["ComplianceResourceTypes"]) == 0:
+                      response = configClient.describe_config_rules()
+                  all_config_rules.extend(response["ConfigRules"])
+                  next_token = response.get("NextToken")
+                  if not next_token:
+                      break
+              return all_config_rules
+
+          def find_equivalent_active_rules(config_rules):
+              checked_rules = set()
+              equivalent_rules = {}
+              with ThreadPoolExecutor(max_workers=5) as executor:
+                  futures = []
+                  for config_rule in config_rules:
+                      arn = config_rule["ConfigRuleArn"]
+                      if arn not in checked_rules and config_rule["ConfigRuleState"] == "ACTIVE":
+                          futures.append(executor.submit(compare_and_group_rules, config_rule, config_rules, checked_rules, equivalent_rules))
+                  for future in as_completed(futures):
+                      future.result()
+              return {key: rules for key, rules in equivalent_rules.items() if len(rules) > 1}
+
+          def compare_and_group_rules(config_rule, config_rules, checked_rules, equivalent_rules):
+            arn = config_rule["ConfigRuleArn"]
+            checked_rules.add(arn)
+            equivalent_rules[arn] = [config_rule]
+            
+            for compared_rule in config_rules:
+                compared_arn = compared_rule["ConfigRuleArn"]
+                
+                if (
+                    compared_arn not in checked_rules and
+                    config_rule["Source"] == compared_rule["Source"] and
+                    compare_scope(config_rule, compared_rule) and
+                    config_rule.get("InputParameters") == compared_rule.get("InputParameters") and
+                    compared_rule["ConfigRuleState"] == "ACTIVE"
+                ):
+                    checked_rules.add(compared_arn)
+                    equivalent_rules[arn].append(compared_rule)
+
+
+          def upload_to_s3(data):
+              timestamp = datetime.now().strftime("Date-%d-%m-%Y Time-%H-%M-%S.json")
+              bucket_name = os.environ.get('S3BucketName')
+              s3Client.put_object(Body=json.dumps(list(data.values()), indent=4), Bucket=bucket_name, Key=timestamp)
+              return timestamp
+
+          def compare_scope(rule1, rule2):
+              match rule1.get("Scope"), rule2.get("Scope"):
+                  case None, None:
                       return True
-                  else:
-                      return False
-              else:
-                  if obj1["Scope"] == obj2["Scope"]:
+                  case {"ComplianceResourceTypes": []}, None | None, {"ComplianceResourceTypes": []}:
                       return True
-                  else:
+                  case {"ComplianceResourceTypes": types1}, {"ComplianceResourceTypes": types2} if types1 == types2:
+                      return True
+                  case _:
                       return False
+
       ReservedConcurrentExecutions: 5
-      Runtime: python3.11
+      Runtime: python3.12
       Handler: index.lambda_handler
-      Timeout: 120
+      Architectures:
+        - arm64
+      Timeout: 300
       Environment:
         Variables:
           S3BucketName: !Ref DetectionLambdaResultsBucket
-    Metadata:
-      "AWS::CloudFormation::Designer":
-        id: 4a4bbb7c-58e6-470a-9e44-fcebb558f85b
 
+  # Define the IAM policy for the Lambda function to describe Config rules and upload to S3
   DetectionLambdaPolicy:
     Type: "AWS::IAM::Policy"
     Properties:
@@ -177,22 +110,17 @@ Resources:
             Effect: Allow
             Action:
               - "config:DescribeConfigRules"
-            Resource: "*"
+            Resource: !Sub "arn:aws:config:${AWS::Region}:${AWS::AccountId}:config-rule/*"
           - Sid: PutObjectsToDetectionLambdaBucket
             Effect: Allow
             Action:
               - "s3:PutObject"
-            Resource:
-              - !GetAtt DetectionLambdaResultsBucket.Arn
-              - !Sub
-                - "${S3BucketName}/*"
-                - S3BucketName: !GetAtt DetectionLambdaResultsBucket.Arn
+              - "s3:PutObjectAcl"
+            Resource: !Sub "${DetectionLambdaResultsBucket.Arn}/*"
       Roles:
         - !Ref DetectionLambdaRole
-    Metadata:
-      "AWS::CloudFormation::Designer":
-        id: 18dc8c84-2444-4208-a708-9d4ac0232ef2
 
+  # Define the IAM role for the Lambda function
   DetectionLambdaRole:
     Type: "AWS::IAM::Role"
     Properties:
@@ -207,15 +135,49 @@ Resources:
               - "sts:AssumeRole"
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-    Metadata:
-      "AWS::CloudFormation::Designer":
-        id: 6e112ca0-f4bc-477f-9712-f3291b78065d
+
+  # Define the S3 bucket for storing the results
   DetectionLambdaResultsBucket:
     Type: "AWS::S3::Bucket"
-    Metadata:
-      "AWS::CloudFormation::Designer":
-        id: 8f622487-faba-40fd-9341-b1d0340dd86a
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
 
+  # Define the S3 Bucket Policy to grant read and write permissions
+  DetectionLambdaResultsBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref DetectionLambdaResultsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Grant list and read access to any user in the account
+          - Sid: ListAndReadAccessForAccountUsers
+            Effect: Allow
+            Action: 
+              - "s3:GetObject"
+              - "s3:ListBucket"
+            Resource:
+              - !Sub "${DetectionLambdaResultsBucket.Arn}/*"  # For object-level actions like GetObject
+              - !Sub "${DetectionLambdaResultsBucket.Arn}"     # For bucket-level actions like ListBucket
+            Principal: "*"
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Sub "${AWS::AccountId}"
+
+          # Grant write access and object ACL management only to the Lambda function
+          - Sid: WriteAccessForLambda
+            Effect: Allow
+            Action: 
+              - "s3:PutObject"
+              - "s3:PutObjectAcl"
+            Resource: !Sub "${DetectionLambdaResultsBucket.Arn}/*"
+            Principal:
+              AWS: !GetAtt DetectionLambdaRole.Arn
+
+  # EventBridge rule to trigger the Lambda function periodically
   DetectionLambdaEventBridgeRule:
     Type: "AWS::Events::Rule"
     Properties:
@@ -227,6 +189,3 @@ Resources:
       Targets:
         - Arn: !GetAtt DuplicateRuleDetectionLambda.Arn
           Id: TargetDuplicateConfigRuleDetectionLambda
-    Metadata:
-      "AWS::CloudFormation::Designer":
-        id: 7eef4ce0-0c76-479b-9991-d421d0f52e0f
