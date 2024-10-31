@@ -53,22 +53,22 @@ Resources:
               return {key: rules for key, rules in equivalent_rules.items() if len(rules) > 1}
 
           def compare_and_group_rules(config_rule, config_rules, checked_rules, equivalent_rules):
-            arn = config_rule["ConfigRuleArn"]
-            checked_rules.add(arn)
-            equivalent_rules[arn] = [config_rule]
+              arn = config_rule["ConfigRuleArn"]
+              checked_rules.add(arn)
+              equivalent_rules[arn] = [config_rule]
             
-            for compared_rule in config_rules:
-                compared_arn = compared_rule["ConfigRuleArn"]
-                
-                if (
-                    compared_arn not in checked_rules and
-                    config_rule["Source"] == compared_rule["Source"] and
-                    compare_scope(config_rule, compared_rule) and
-                    config_rule.get("InputParameters") == compared_rule.get("InputParameters") and
-                    compared_rule["ConfigRuleState"] == "ACTIVE"
-                ):
-                    checked_rules.add(compared_arn)
-                    equivalent_rules[arn].append(compared_rule)
+              for compared_rule in config_rules:
+                  compared_arn = compared_rule["ConfigRuleArn"]
+                  
+                  if (
+                      compared_arn not in checked_rules and
+                      config_rule["Source"] == compared_rule["Source"] and
+                      compare_scope(config_rule, compared_rule) and
+                      config_rule.get("InputParameters") == compared_rule.get("InputParameters") and
+                      compared_rule["ConfigRuleState"] == "ACTIVE"
+                  ):
+                      checked_rules.add(compared_arn)
+                      equivalent_rules[arn].append(compared_rule)
 
 
           def upload_to_s3(data):
@@ -144,6 +144,11 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
 
   # Define the S3 Bucket Policy to grant read and write permissions
   DetectionLambdaResultsBucketPolicy:
@@ -177,15 +182,40 @@ Resources:
             Principal:
               AWS: !GetAtt DetectionLambdaRole.Arn
 
-  # EventBridge rule to trigger the Lambda function periodically
-  DetectionLambdaEventBridgeRule:
-    Type: "AWS::Events::Rule"
+  # EventBridge Scheduler to trigger the Lambda function periodically
+  SchedulerForDuplicateRuleDetectionLambda:
+    Type: AWS::Scheduler::Schedule
     Properties:
-      Description: >-
-        This rule is used to trigger the DuplicateRuleDetectionLambda that
-        detects potential duplicated AWS Config Rules that you have deployed in
-        your AWS Account.
-      ScheduleExpression: cron(0 0 1 * ? *)
-      Targets:
-        - Arn: !GetAtt DuplicateRuleDetectionLambda.Arn
-          Id: TargetDuplicateConfigRuleDetectionLambda
+      Description: This schedule is used to trigger the DuplicateDetectionLambda that detects potential duplicated AWS Config Rules that you have deployed in your AWS Account.
+      ScheduleExpression: "cron(0 0 1 * ? *)"
+      State: ENABLED
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt DuplicateRuleDetectionLambda.Arn
+        RoleArn: !GetAtt IAMRoleforDuplicateRuleDetectionLambdaScheduler.Arn
+
+  # Define the IAM role for the EventBridge Scheduler
+  IAMRoleforDuplicateRuleDetectionLambdaScheduler:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: PolicyForSchedulerForDuplicateRuleDetectionLambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource:
+                  - !GetAtt DuplicateRuleDetectionLambda.Arn
+    DependsOn: DuplicateRuleDetectionLambda
