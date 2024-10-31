@@ -182,19 +182,6 @@ Resources:
             Principal:
               AWS: !GetAtt DetectionLambdaRole.Arn
 
-  # EventBridge rule to trigger the Lambda function periodically
-  # DetectionLambdaEventBridgeRule:
-  #   Type: "AWS::Events::Rule"
-  #   Properties:
-  #     Description: >-
-  #       This rule is used to trigger the DuplicateRuleDetectionLambda that
-  #       detects potential duplicated AWS Config Rules that you have deployed in
-  #       your AWS Account.
-  #     ScheduleExpression: cron(0 0 1 * ? *)
-  #     Targets:
-  #       - Arn: !GetAtt DuplicateRuleDetectionLambda.Arn
-  #         Id: TargetDuplicateConfigRuleDetectionLambda
-
   # EventBridge Scheduler to trigger the Lambda function periodically
   SchedulerForDuplicateRuleDetectionLambda:
     Type: AWS::Scheduler::Schedule
