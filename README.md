@@ -1,126 +1,177 @@
+## Table of Contents
+1. [Solution Overview](#solution-overview)
+2. [Prerequisites](#prerequisites)
+3. [Walkthrough](#walkthrough)
+4. [CloudFormation Template](#cloudformation-template-review)
+5. [Deployment](#deployment)
+6. [Duplicate Resolution](#duplicate-resolution)
+7. [Clean-up](#clean-up)
+8. [Additional Resources](#additional-resourcescall-to-action)
+9. [Security](#security)
+10. [License](#license)
+
 ## Duplicate Rule Detection Tool
 
-[AWS Config](https://aws.amazon.com/config/) continuously audits and assesses the configurations of your AWS resources by generating configuration items for supported AWS resources that exist in your account and when the configuration of a resource changes, and it maintains historical records of the configuration items of your resources from the time you start the configuration recorder.
+[Amazon Web Services (AWS)](https://aws.amazon.com/) customers use various AWS services to migrate, build, and innovate in the AWS Cloud. To meet compliance requirements, customers need to monitor, evaluate, and detect changes made to AWS resources. [AWS Config](https://aws.amazon.com/config/) continuously audits, assesses, and evaluates the configurations of your AWS resources.
 
-AWS Config rules, also referred to as detective controls, continuously evaluate your AWS resource configurations for desired settings. Depending on the rule, AWS Config will evaluate your resources either in response to configuration changes or periodically. AWS Config provides AWS managed rules, which are predefined, customizable rules that AWS Config uses to evaluate whether your AWS resources comply with common best practices.
+[AWS Config rules](https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config_use-managed-rules.html) continuously evaluates your AWS resource configurations for desired settings, AWS Config will evaluate your resources either in response to configuration changes or periodically. AWS Config provides AWS managed rules, which are predefined, customizable rules that are used to evaluate whether your AWS resources comply with common best practices. For example, you could use a managed rule to assess whether your [Amazon Elastic Block Store (Amazon EBS)](https://aws.amazon.com/ebs/) volumes have encryption enabled or whether specific tags are applied to resources. AWS Config rules can be enabled individually or through [AWS Config Conformance Packs](https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html), which group rules and remediations together. Customers also have options for deploying AWS Config rules: [AWS Security Hub](https://aws.amazon.com/security-hub/) groups checks against rules together as [standards](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-standards.html), and [AWS Control Tower](https://aws.amazon.com/controltower) offers controls through the [Controls Library](https://docs.aws.amazon.com/controltower/latest/controlreference/controls-reference.html). Many AWS customers use a combination of these tools which can create duplicate Config Rules controls in a single AWS account.
 
-AWS Config rules can be enabled individually or through AWS Config Conformance Packs, which groups rules to help customers meet their compliance requirements. Additionally, AWS services [AWS Security Hub](https://aws.amazon.com/security-hub/) and [AWS Control Tower](https://aws.amazon.com/controltower/) Controls Library integrate with Config to deploy detective controls grouped together by specific standards or categories.
+In this sample, we introduce our Duplicate Rule Detection tool, built to help customers identify duplicate AWS Config rules and sources. You can assess the results and review opportunities to reduce duplicate evaluations, consolidate rule deployment, and help to optimizing your compliance posture.
 
-AWS customers often deploy a combination of these mechanisms to establish a more comprehensive security posture but the underlying detective controls are all deployed as individual AWS Config rules. At times, there may exist an overlap in the scope of the grouped detective controls and duplicate rules may be deployed in a single AWS account and region. Duplicate rules can contribute to a loss of efficiency and additional manual intervention when evaluating rules at scale.
+## Solution overview
 
-## Overview of Solution
+This serverless solution collects the current active AWS Config rules and identifies duplicates based on identical sources, scopes, input parameters, and states.
 
-In order to solve this problem, we have built a solution to assess the current active Config rules and identify duplicates in an AWS account so customers can make informed decisions on how to streamline rules and reduce complexity.
+Figure 1 that follows illustrates the solution.
 
-The diagram below illustrates the solution we have created. It begins with an [Amazon EventBridge](https://aws.amazon.com/pm/eventbridge/) event triggered on the basis of a cron expression that is configurable based on the customer’s preferred schedule. This event then triggers an [AWS Lambda](https://aws.amazon.com/lambda/) function, which makes the describe-config-rules API call to AWS Config API. The Lambda function aggregates all of the config rules deployed in the account within the same region, from Security Hub Standards, Config Conformance Packs, standalone Config Rules, and Control Tower Library. Then, the Lambda function iterates through all of the deployed Config rules to determine whether there are any duplicate rules. In order to be considered duplicates, Config rules need to have identical sources, scopes, input parameters and states. If any duplicates are found, they are grouped together in JSON format. The Lambda function takes the JSON of the duplicate rules, timestamps it, and saves it to an Amazon S3 bucket for further analysis. With this solution, customers have a quick way to identify any duplicate rules within their environment and take action accordingly.
+![Figure 1: Architectural diagram of the Duplicate Rule Detection Tool.](images/Rule-Dup-Architecture.png)
 
-![Figure 1. Architectural diagram of the Duplicate Rule Detection Tool.](/images/Rule-Dup-Architecture.png)
+1. An [Amazon EventBridge Scheduler](https://aws.amazon.com/eventbridge/scheduler/) triggers an [AWS Lambda](https://aws.amazon.com/lambda/) function.
+2. The Lambda function completes several tasks:
+   1. Sends the _describe-config-rules_ API call to the AWS Config API which returns details about the enabled AWS Config rules in the current AWS account and AWS region.
+   2. Iterates through the returned AWS Config rules to determine whether there are duplicate rules. If duplicates are found, they are grouped together in JSON format.
+   3. Writes the output to a time-stamped JSON file and saves it to an [Amazon Simple Storage Service (S3)](https://aws.amazon.com/s3/) bucket for further analysis.
+
+## Prerequisites
+
+An AWS account with rules enabled using AWS Config, Security Hub standards or AWS Control Tower controls. Before getting started, make sure that you have a basic understanding of the following:
+
+- [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/getting-started.html)
+- [AWS Lambda Function](https://docs.aws.amazon.com/lambda/latest/dg/welcome.html)
+- Python and [Boto3](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)
 
 ## Walkthrough
 
-For this demonstration, we are using an AWS account that has two Config Conformance Packs deployed ([Operational Best Practices for HIPAA Security](https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-hipaa_security.html) and [Operational Best Practices for NIST CSF](https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-nist-csf.html)) along with the [AWS Foundational Security Best Practices (FSBP)](https://docs.aws.amazon.com/securityhub/latest/userguide/fsbp-standard.html) standard in Security Hub.
+To demonstrate the tool, use an AWS account that has two [AWS Config Conformance Packs](https://docs.aws.amazon.com/config/latest/developerguide/conformance-packs.html) deployed ([Operational Best Practices for HIPAA Security](https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-hipaa_security.html) and [Operational Best Practices for NIST CSF](https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-nist-csf.html)) along with the [AWS Foundational Security Best Practices (FSBP)](https://docs.aws.amazon.com/securityhub/latest/userguide/fsbp-standard.html) standard in Security Hub.
 
-### AWS CloudFormation template review
+### CloudFormation template review
 
-The CloudFormation template included in this blog will deploy several necessary components:
+The [AWS CloudFormation](https://aws.amazon.com/cloudformation/) template included in this sample deploys several components:
 
-- DuplicateRuleDetectionLambda - An AWS Lambda function that:
-  - Calls the AWS Config describe_config_rules API to return all enabled Config rules
-  - Examines the returned Config rules to identify duplicate rules with identical parameters
-  - Writes the date-stamped output JSON file to the DetectionLambdaResultsBucket bucket
-- DetectionLambdaPolicy - An AWS IAM policy attached to the DetectionLambdaRole role that allows access to:
+- DuplicateConfigRuleDetectionLambda - A Lambda function that:
+  - Sends [describe_config_rules](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/config/client/describe_config_rules.html) to AWS Config API to return enabled Config rules
+  - Queries the returned rules to identify duplicate rules with identical parameters
+  - Writes the date-stamped output JSON file to the S3BucketWhereJSONIsStoredFromDuplicateConfigRuleDetectionLambda bucket
+- PolicyForIAMRoleForDuplicateConfigRuleDetectionLambda - An IAM policy attached to the IAMRoleForDuplicateConfigRuleDetectionLambda role that allows access to:
   - Basic Lambda Execution Permissions
   - config:DescribeConfigRules
-  - s3:PutObject with a constraint to only allow on the DetectionLambdaResultsBucket bucket
-- DetectionLambdaRole - An AWS IAM role with a trust policy to allow only the AWS Lambda service to assume
-- DetectionLambdaResultsBucket - An Amazon S3 bucket for storing the output JSON files written by the DuplicateRuleDetectionLambda function
-- DetectionLambdaEventBridgeRule - This Amazon EventBridge rule is used to trigger the DuplicateRuleDetectionLambda that detects duplicate Config rules deployed in the AWS account
-  - ScheduledExpression property can be used to configure reoccurence
+  - s3:PutObject with a constraint to only allow on the S3BucketWhereJSONIsStoredFromDuplicateConfigRuleDetectionLambda bucket
+- IAMRoleForDuplicateConfigRuleDetectionLambda - An IAM role with a trust policy to allow only the AWS Lambda service to assume
+- S3BucketWhereJSONIsStoredFromDuplicateConfigRuleDetectionLambda - An Amazon S3 bucket for storing the output JSON files written by the DuplicateConfigRuleDetectionLambda function
+- SchedulerForDuplicateConfigRuleDetectionLambda - EventBridge Scheduler used to trigger the DuplicateConfigRuleDetectionLambda
+  - ScheduleExpression - Property to define when the schedule runs
+- IAMRoleforDuplicateConfigRuleDetectionLambdaScheduler - An IAM role for SchedulerForDuplicateConfigRuleDetectionLambda with IAM inline policy to allow Lambda invocation
 
-### Prerequisites
+### Deployment
 
-An AWS account with detective controls enabled, which may include AWS Config conformance packs, AWS Security Hub standards, and/or AWS Control Tower controls.
-
-### Deploy the solution
-
-> **Note:** You must have IAM permissions to launch CloudFormation templates that create IAM roles, and to create all the AWS resources in the solution. Also, you are responsible for the cost of the AWS services used while running this solution. For more information about costs, see the pricing pages for each AWS service.
-
-1. Download the duplicate-rule-detection.yml CloudFormation template from this GiHub repository.
-   1. Make any necessary changes to template, by default, the ScheduledExpression for the EventBridge rule is set for monthly reocurrence.
-2. Log in to the **AWS CloudFormation** console.
-3. From the sidebar on this page, choose **Stacks**.
-4. At the top of the Stacks page, choose **Create Stack** and then **With new resources** from the dropdown menu.
+1. Download the DuplicateConfigRuleDetectionCloudformationTemplate.yml CloudFormation template from this GitHub repository.
+   _(Note: The default frequency of the EventBridge Scheduler is to run on the first day of each month. Update the template CRON expression as needed before creating the stack.)_
+2. Sign in to the AWS Management console and navigate to **AWS CloudFormation** by using the search feature at the top of the page.
+3. In the navigation pane, choose **Stacks**.
+4. At the top of the **Stacks** page, choose **Create Stack**, then select **With new resources** from the dropdown menu.
 5. On the **Create stack** page
-   1. For Prerequisite - Prepare template, leave the default **Template is ready**
-   2. Under Specify template, choose **Upload a template** file, then select the downloaded duplicate-rule-detection.yml template and click **Open**.
+   1. For **Prerequisite - Prepare template**, leave the default setting **Template is ready**
+   2. Under **Specify template**, choose **Upload a template file**, then select the downloaded DuplicateConfigRuleDetectionCloudformationTemplate.yml template and choose **Open**.
 6. At the bottom of the page, choose **Next**.
-7. On the Specify stack details page
-   1. For **Stack name**, provide a name for the Stack. You can use: **DuplicateRulesStack**.
+7. On the **Specify stack details** page
+   1. For **Stack name**, enter a name for the Stack, for example, **_duplicate-detection-rule-stack_**.
 8. At the bottom of the page, choose **Next**.
 9. On the **Configure stack options** page
-   1. For Tags, add any desired tags. Tags are optional.
-   2. For Permissions, don't choose a role, CloudFormation uses permissions based on your user credentials.
-   3. For Stack failure options, leave the default option to **Roll back all stack resources**
+   1. (Optional) For Tags, add tags as needed.
+   2. For **Permissions**, don't choose a role, CloudFormation uses permissions based on your user credentials.
+   3. For **Stack failure options**, leave the default option to **Roll back all stack resources**
 10. At the bottom of the page, choose **Next**.
-11. On the **Review and create** page, review the details of your stack. Because this solution creates an IAM policy and role, you will need to check the box next to **I acknowledge that AWS CloudFormation might create IAM resources**.
-12. After you review the stack creation settings, choose **Submit** to launch your stack
-13. From the CloudFormation Stack page, monitor the status of the DuplicateRulesStack as it updated from **“CREATE_IN_PROGRESS”** to **“CREATE_COMPLETE”**. You may need to refresh the page to view updates.
-    14.From the **Resources** tab, you will see all of the resources that were created from the template.
+11. On the **Review** page, review the details of your stack. 
+12. After you review the stack creation settings, choose **Create stack** to launch your stack
+13. From the **CloudFormation Stack** page, monitor the status of the stack as it updates from **CREATE_IN_PROGRESS** to **CREATE_COMPLETE**. You may need to refresh the page to view updates.
+14. From the **Resources** tab, you will see the resources that were created from the template.
 
-### Testing/Validation
+### Test
 
-The output of the Lambda function is a JSON file written to an S3 bucket. Each duplicate rule is presented as an object and are grouped together in an array.
-![Figure 2. Screen shot of solution output.](/images/Rule-Dup-Output.png)
+_Use the steps below to invoke the Lambda function to create a one-time output for testing._
 
-From the output, we can see that in this account we have three instances of the same Config managed rule:
+1. Sign in to the **AWS CloudFormation** console.
+2. From the navigation pane, choose **Stacks** and then click on the **Stack name** you used when deploying this solution.
+3. Choose the **Resources** tab in the _duplicate-detection-rule-stack_ and note the name of the Lambda function created for this solution.
+4. Navigate to the **Lambda** console and choose **Functions** from the navigation pane.
+5. Select the function name noted in Step 3.
+6. From the **Code** tab, click on the **Test** button, which will open a test window, then choose **Invoke**.
+7. Navigate to the **Amazon S3** console and select the bucket name that was created as part of this solution to see the JSON output created by the Lambda function.
+8. Select the object and choose **Download** to view the output locally.
 
-- The “SourceIdentifier” key value identifies the managed rule as ACCESS_KEYS_ROTATED (noted in red).
-- The “CreatedBy” key value identifies the service that enabled the rule (noted in green); both
+### Validation
 
-Each rule has the same InputParameters, which is a qualifier for how we are defining a duplicate rule. There could be a use case that a customer may have a need to deploy multiple variations of the same rule with distinct input parameters.
+To view the JSON output file and understand the structure, open the downloaded outputfile with a text editor that supports JavaScript Objection Notation (JSON). Each duplicate rule is presented as a JSON object defined within left ({) and right (}) braces. Matching duplicate rules are grouped together in an array within left ([) and right (]) brackets and separated by commas.
 
-Now that the duplicate rules have been identified, further investigation may be required to identify the specific conformance pack and Security Hub standards that the rule is included in.
-![Figure 3. Screen shot of AWS Config conformance pack dashboard.](/images/Conf-Pack.png)
+From the sample output that follows, you can see that there are three instances of the same AWS Config managed rule in this account:
+- The first two rules are deployed from two different conformance packs and the third rule was created by Security Hub.
+- The SourceIdentifier key value identifies the managed rule as ACCESS_KEYS_ROTATED.
+- The CreatedBy key value identifies the service that enabled the rule.
 
-Each output object contains a ConfigRuleName key value pair that includes the prefixes and suffixes that may be applied to uniquely identify each rule and that ties back to the specific conformance pack. From the Config Conformance Pack dashboard, you can search rules by name to map to the corresponding conformance pack.
-![Figure 4. Screen shot of AWS Security Hub dashboard.](/images/Sec-Hub.png)
+Each rule has the same InputParameters, which is a qualifier for how a duplicate rule is defined.
 
-For Security Hub security standards dashboard, you can search for the specific control and identify the corresponding config rule.
+![Figure 2: Solution output showing set of duplicate rules and keys that identify a common SourceIdentifier value but different values for the CreatedBy key](images/Rule-Dup-Output.png)
 
-## Cleaning up
+Now that you’ve identified the duplicate rules, further investigation is needed to identify the specific conformance pack and Security Hub standards that the rule is included in. The ConfigRuleName value is different for each duplicate rule and includes prefixes and suffixes based on how the rule was deployed:
+- Rules deployed using conformance packs will include a suffix to the displayed AWS Config rule name (for example, access-keys-rotated-conformance-pack-a1b2c3d4e).
+- Rules deployed using Security Hub standards include both a prefix and a suffix to the displayed AWS Config rule name (for example, securityhub-access-keys-rotated-a1b2c3).
+- Rules deployed using AWS Control Tower include a prefix to the displayed AWS Config rule name (for example, AWSControlTower_AWS-GR_EBS_OPTIMIZED_INSTANCE).
 
-Take the following steps to remove the resources you created in this walkthrough:
+The ConfigRuleName value maps back to the specific conformance pack or Security Hub standard.
 
-### Delete Stack:
+1.	From the **AWS Config** console, choose **Conformance pack** from the navigation pane. Select a conformance pack and search the rules by filtering with the SourceIdentifier value from the output file.
 
-Note: Any objects added to the solution bucket after initial stack deployment will will need to be deleted before attempting to delete Stack.)
+![Figure 3. AWS Config conformance pack dashboard showing mapping between a rule and the conformance pack that enabled the rule.](images/Conf-Pack.png)
 
-1. Sign in to the console of the AWS account and navigate to the **CloudFormation** console.
-2. From the sidebar on this page, choose **Stacks**.
-3. Select the radio button next to the stack name used in the deployment step and select **Delete**.
-4. Confirm that you would like to Delete stack by choosing the **confirmation** button.
-5. From the CloudFormation Stack page, monitor the status of the stack as it updated from **“DELETE_IN_PROGRESS”** to **“DELETE_COMPLETE”**.
+To identify which Security Hub standards the rule is enabled with, use the following steps.
 
-## Conclusion
+2.	Using the AWS Config Developer Guide, search the [List of Managed Rules](https://docs.aws.amazon.com/config/latest/developerguide/managed-rules-by-aws-config.html) using the SourceIdentifier and note the Resource Types for the managed rule (for example, AWS::IAM::User).
+3.	Use the [Security Hub controls reference](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-controls-reference.html) to search for the AWS service that was included in the Resource Type from the previous step (that is, the IAM controls).
+4.	Search for the corresponding control by using the SourceIdentifier and note the Control ID (that is, IAM.3).
+5.	Sign in to the **Security Hub** console and choose Controls from the navigation pane. Search for the Control ID by filtering on ID and select the Control Title.
+6.	Choose the Investigate tab and select the Config rule to view the corresponding AWS Config rule.
+7.	Select the Standards and requirements tab on the Control page to view the standards that the AWS Config rule is a part of.
 
-For customers in regulated industries, it’s critical to understand the compliance of resources as it relates to specific rules, such as default encryption settings or ensuring network connections are encrypted. Detective controls enable customers to evaluate the evolving state of their resources on AWS. Detective controls in AWS are enabled as AWS Config rules and can be deployed individually or grouped together in Config conformance packs or by proxy via Security Hub standards and Control Tower Controls Library. Many customer will use more than one of these mechanisms and this can result in duplicate rules being deployed in an AWS account. This solution provides a tool to assess the currently deployed Config rules in a single AWS account and identify when duplicate rules exist so customers can make informed decisions about any changes that may be necessary to reduce the complexity of their compliance posture and reduce the manual intervention required for ongoing management.
+![Figure 4. AWS Security Hub dashboard.](images/Sec-Hub.png)
+
+## Duplicate Resolution
+
+After the assessment is complete and duplicate rules are identified, you can work to consolidate rules and resolve duplicates.
+
+If the AWS account being evaluated is part of an [AWS Organizations](https://aws.amazon.com/organizations/), a delegated administrator account in the Organization may be registered to [manage specific AWS services](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_integrate_services_list.html), such as [AWS Config](https://docs.aws.amazon.com/config/latest/developerguide/aggregated-register-delegated-administrator.html) and [Security Hub](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-accounts.html). Resolution might need to be completed from the delegated administrator account.
+
+Some options customers can take to resolve duplicate AWS Config rules include:
+
+- If conformance packs were deployed from [AWS Systems Manager Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-cpack.html), then only sample templates are available, which can’t be modified. Customers can instead [create templates for custom conformance packs](https://docs.aws.amazon.com/config/latest/developerguide/custom-conformance-pack.html) and [deploy them directly from AWS Config](https://docs.aws.amazon.com/config/latest/developerguide/conformance-pack-deploy.html).
+- If conformance packs were deployed from the Config dashboard and sample templates were used, then customers can create templates for custom conformance packs and deploy them directly from AWS Config.
+- If standards are enabled in Security Hub, [individual controls can be disabled](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-standards-enable-disable-controls.html) to prevent redundancy.
+- If controls are deployed from the Control Tower Controls Library, [controls can be enabled or disabled as needed from the Control Tower](https://docs.aws.amazon.com/controltower/latest/controlreference/enable-controls-on-ou.html) console or programmatically with [supporting APIs](https://docs.aws.amazon.com/controltower/latest/APIReference/Welcome.html).
+
+When deciding on an effective approach to consolidate rules and resolve duplicates, it is helpful to consider additional capabilities such as visualization and automated remediation:
+
+- AWS Config provides a [dashboard](https://docs.aws.amazon.com/config/latest/developerguide/viewing-the-aws-config-dashboard.html) to view resources, rules, conformance packs, and their compliance states. Customers can also [configure remediation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-config-remediationconfiguration.html) actions in custom templates to target [AWS Systems Manager Automation runbooks](https://docs.aws.amazon.com/systems-manager-automation-runbooks/latest/userguide/automation-runbook-reference.html) that define the actions that Systems Manager performs.
+- Security Hub provides a [summary dashboard](https://docs.aws.amazon.com/securityhub/latest/userguide/dashboard.html) to identify areas of concern, including aggregating findings across an AWS Organization. Customers can customize the dashboard layout, add or remove widgets, and filter the data to focus on areas of particular interest. To configure [automated response and remediation](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-cloudwatch-events.html), Security Hub automatically sends new findings and all updates to existing findings to EventBridge as EventBridge events. Customers can write simple rules to indicate which events and what automated actions to take when an event matches a rule.
+- AWS Control Tower provides a console to view control categories, individual controls, and status along with enabled OUs and/or accounts. Remediation for non-compliant resources is currently not supported through Control Tower.
+
+The best approach for consolidating rules and resolving duplicates should be an assessment of the factors listed above along with developing a strategy for governance at scale. Security Hub provides a comprehensive view of compliance across an AWS Organization by collecting security data across AWS accounts, AWS services, and supported third-party products. Enabling one of more Security Hub standards provides a mechanism to deploy controls without risk of duplication. You can deploy additional controls individually from AWS Config or Control Tower.
+
+## Clean up
+
+Use the following steps to remove the resources you created in this walkthrough:
+
+1. Sign in to the **AWS CloudFormation** console and choose  **Stacks** from the navigation pane.
+2. Select the **Stack name** you used when deploying this solution.
+3. Choose to the **Resources** tab in the _duplicate-detection-rule-stack_ console and note the name of the S3 bucket created for this solution.
+4. Navigate to the **Amazon S3** console.
+5. Click the radio button next to the bucket noted in Step 3 and click on the **Empty** button and follow additional steps to empty the bucket.
+6. Navigate to the **AWS CloudFormation** console and choose **Stacks** from the navigation pane.
+7. Select the radio button next to the stack name used in the deployment step and select **Delete**.
+8. Choose **Delete** to confirm that you want to delete the stack.
+9. From the CloudFormation Stack page, monitor the status of the stack as it updates from **DELETE_IN_PROGRESS** to **DELETE_COMPLETE**.
 
 ## Additional Resources/Call to Action
 
 **This sample code is not intended to be used in your production accounts without testing, securing, and optimizing the content based on your specific quality control practices and standards. Deploying this sample code may incur AWS charges for creating or using AWS chargeable resources, such as running Amazon EC2 instances or using Amazon S3 storage.**
-
-Once the assessment is complete and duplicate rules are identified, further investigation can be completed to identify the sources of the deployed Config rules. If the AWS account being evaluated is part of an AWS Organizations, then dependencies may exist.
-
-Rules deployed via Conformance Packs will include a suffix to the displayed Config rule name that includes “conformance-pack-” followed by a string of alpha-numeric characters, which logically represents a specific Conformance Pack.
-
-Rules deployed via Security Hub standards will include both a prefix and suffix to the displayed Config rule name that begins “securityhub-” and also followed by a random string of alpha-numeric characters
-
-- If conformance packs were deployed from AWS Systems Manager Quick Start, then only sample templates are available, which can’t be modified, and custom templates can’t be used.
-- If conformance packs were deployed from the Config dashboard, then custom templates can be used.
-- If standards are enabled in Security Hub, individual controls can be disabled to prevent redundancy.
-- If controls are deployed from the Control Tower Controls Library, then steps can be taken to consolidate controls.
-
-After the sources of the duplicate rules have been identified, customers can make decisions if changes are required and prioritize the most appropriate method for consolidating rule deployment based on service functionality and how compliance would be most effectively aggregated.
 
 ## Below are some additional configurations that should be implemented when deploying this solution to align with security best practices.
 
@@ -144,5 +195,4 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 
 ## License
 
-This library is licensed under the MIT-0 License. See the LICENSE file.
-
+This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
